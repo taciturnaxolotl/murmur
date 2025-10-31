@@ -1,0 +1,157 @@
+import Vapor
+import WhisperKit
+import Foundation
+import Fluent
+
+actor TranscriptionService {
+    private var whisperKit: WhisperKit?
+    private let tempDirectory: URL
+    private var activeJobs: Set<String> = []
+    private let logger = Logger(label: "murmur.transcription")
+    
+    init() {
+        self.tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("murmur", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    }
+    
+    func initialize() async throws {
+        guard whisperKit == nil else { return }
+        
+        let modelName = Environment.get("WHISPER_MODEL") ?? "small"
+        
+        let config = WhisperKitConfig(model: modelName)
+        
+        whisperKit = try await WhisperKit(config)
+    }
+    
+    func startTranscription(jobId: String, audioData: Data, fileExtension: String, db: any Database) async {
+        guard !activeJobs.contains(jobId) else { return }
+        activeJobs.insert(jobId)
+        
+        let tempFilePath = tempDirectory.appendingPathComponent("\(jobId).\(fileExtension)")
+        
+        logger.info("Starting transcription for job \(jobId) (format: .\(fileExtension))")
+        
+        do {
+            try audioData.write(to: tempFilePath)
+            
+            logger.info("Audio file size: \(audioData.count) bytes")
+            
+            try await updateJob(jobId, status: "processing", progress: 0, db: db)
+            
+            guard let whisper = whisperKit else {
+                throw Abort(.internalServerError, reason: "WhisperKit not initialized")
+            }
+            
+            logger.info("Transcribing audio file for job \(jobId)...")
+            
+            try await updateJob(jobId, status: "transcribing", progress: 0, db: db)
+            
+            var lastProgress: Double = 0
+            var lastLogTime = Date()
+            var callbackCount = 0
+            var estimatedTotal = 0
+            
+            let results = try await whisper.transcribe(
+                audioPath: tempFilePath.path,
+                callback: { progress in
+                    callbackCount += 1
+                    
+                    // Estimate total callbacks after we have some data
+                    if estimatedTotal == 0 && callbackCount > 100 {
+                        // For an hour recording, expect ~4000-6000 callbacks
+                        // Estimate based on current rate
+                        estimatedTotal = callbackCount * 50 // rough estimate
+                    }
+                    
+                    // Only log every 2 seconds to avoid spam
+                    let now = Date()
+                    if now.timeIntervalSince(lastLogTime) >= 2.0 {
+                        lastLogTime = now
+                        
+                        let currentProgress: Double
+                        if estimatedTotal > 0 {
+                            currentProgress = min((Double(callbackCount) / Double(estimatedTotal)) * 100.0, 95.0)
+                        } else {
+                            // Early on, show minimal progress
+                            currentProgress = min(Double(callbackCount) / 100.0, 10.0)
+                        }
+                        
+                        if currentProgress > lastProgress {
+                            lastProgress = currentProgress
+                            
+                            let transcript = progress.text.isEmpty ? "" : progress.text
+                            
+                            print("[\(jobId)] Progress: \(String(format: "%.1f", currentProgress))% (\(callbackCount) callbacks) - \(transcript.prefix(50))...")
+                            
+                            Task {
+                                try? await self.updateJob(
+                                    jobId,
+                                    status: "transcribing",
+                                    progress: currentProgress,
+                                    transcript: transcript,
+                                    db: db
+                                )
+                            }
+                        }
+                    }
+                    return true
+                }
+            )
+            
+            let fullTranscript = results.map { $0.text }.joined(separator: " ")
+            
+            logger.info("Transcription completed for job \(jobId) - \(fullTranscript.count) characters, total callbacks: \(callbackCount)")
+            
+            try await updateJob(
+                jobId,
+                status: "completed",
+                progress: 100.0,
+                transcript: fullTranscript,
+                db: db
+            )
+            
+        } catch {
+            logger.error("Transcription failed for job \(jobId): \(error.localizedDescription)")
+            try? await updateJob(
+                jobId,
+                status: "failed",
+                errorMessage: error.localizedDescription,
+                db: db
+            )
+        }
+        
+        try? FileManager.default.removeItem(at: tempFilePath)
+        activeJobs.remove(jobId)
+    }
+    
+    private func updateJob(
+        _ jobId: String,
+        status: String? = nil,
+        progress: Double? = nil,
+        transcript: String? = nil,
+        errorMessage: String? = nil,
+        db: any Database
+    ) async throws {
+        guard let job = try await MurmurJob.find(jobId, on: db) else {
+            return
+        }
+        
+        if let status = status {
+            job.status = status
+        }
+        if let progress = progress {
+            job.progress = progress
+        }
+        if let transcript = transcript {
+            job.transcript = transcript
+        }
+        if let errorMessage = errorMessage {
+            job.errorMessage = errorMessage
+        }
+        
+        job.updatedAt = Int(Date().timeIntervalSince1970)
+        try await job.save(on: db)
+    }
+}
