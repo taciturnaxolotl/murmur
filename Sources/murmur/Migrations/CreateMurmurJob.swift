@@ -7,6 +7,7 @@ struct CreateMurmurJob: AsyncMigration {
             .field("status", .string, .required)
             .field("progress", .double, .required)
             .field("transcript", .string, .required)
+            .field("transcript_segments", .string, .required)
             .field("error_message", .string, .required)
             .field("created_at", .int, .required)
             .field("updated_at", .int, .required)

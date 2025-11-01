@@ -23,7 +23,7 @@ struct TranscriptionController: RouteCollection {
         let fileData = Data(buffer: content.file.data)
         
         var fileExtension = "m4a"
-        let filename = content.file.filename ?? ""
+        let filename = content.file.filename
         if !filename.isEmpty {
             fileExtension = (filename as NSString).pathExtension.lowercased()
             if fileExtension.isEmpty {
@@ -36,6 +36,7 @@ struct TranscriptionController: RouteCollection {
             status: "pending",
             progress: 0,
             transcript: "",
+            transcriptSegments: "[]",
             errorMessage: "",
             createdAt: now,
             updatedAt: now
@@ -69,18 +70,85 @@ struct TranscriptionController: RouteCollection {
             throw Abort(.notFound, reason: "Job not found")
         }
         
+        
+        let format = req.query[String.self, at: "format"] ?? "json"
+
         let response: [String: Any] = [
             "status": job.status,
             "progress": job.progress,
             "transcript": job.transcript,
             "error_message": job.errorMessage
         ]
-        
-        return try await Response(
-            status: .ok,
-            headers: ["Content-Type": "application/json"],
-            body: .init(data: JSONSerialization.data(withJSONObject: response))
-        )
+
+        if format == "json" {
+            // Default JSON response
+            var jsonResponse = response
+            
+            if let segmentsData = job.transcriptSegments.data(using: .utf8) {
+                let segments = try? JSONSerialization.jsonObject(with: segmentsData, options: [])
+                jsonResponse["transcript_segments"] = segments
+            } else {
+                jsonResponse["transcript_segments"] = []
+            }
+
+            return try Response(
+                status: .ok,
+                headers: ["Content-Type": "application/json"],
+                body: .init(data: JSONSerialization.data(withJSONObject: jsonResponse))
+            )
+        } else if format == "vtt" {
+            // VTT response
+            var vtt = "WEBVTT\n\n"
+            if let segmentsData = job.transcriptSegments.data(using: .utf8),
+               let segments = try? JSONDecoder().decode([[String: AnyDecodable]].self, from: segmentsData) {
+                for segment in segments {
+                    let start = segment["start"]?.value as? Double ?? 0.0
+                    let end = segment["end"]?.value as? Double ?? 0.0
+                    let text = segment["text"]?.value as? String ?? ""
+                    
+                    let startFormatted = formatTimestamp(start)
+                    let endFormatted = formatTimestamp(end)
+                    
+                    vtt += "\(startFormatted) --> \(endFormatted)\n"
+                    vtt += "\(text.trimmingCharacters(in: .whitespacesAndNewlines))\n\n"
+                }
+            }
+            return Response(status: .ok, headers: ["Content-Type": "text/vtt"], body: .init(string: vtt))
+        } else {
+            throw Abort(.badRequest, reason: "Unsupported format. Use 'json' or 'vtt'.")
+        }
+    }
+    
+    private func formatTimestamp(_ timestamp: Double) -> String {
+        let hours = Int(timestamp) / 3600
+        let minutes = (Int(timestamp) % 3600) / 60
+        let seconds = Int(timestamp) % 60
+        let milliseconds = Int((timestamp - Double(Int(timestamp))) * 1000)
+        return String(format: "%02d:%02d:%02d.%03d", hours, minutes, seconds, milliseconds)
+    }
+
+    struct AnyDecodable: Decodable {
+        let value: Any
+
+        init<T>(_ value: T?) {
+            self.value = value ?? ()
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+
+            if let intVal = try? container.decode(Int.self) {
+                value = intVal
+            } else if let doubleVal = try? container.decode(Double.self) {
+                value = doubleVal
+            } else if let stringVal = try? container.decode(String.self) {
+                value = stringVal
+            } else if let boolVal = try? container.decode(Bool.self) {
+                value = boolVal
+            } else {
+                throw DecodingError.typeMismatch(AnyDecodable.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Unsupported type"))
+            }
+        }
     }
     
     func streamJob(req: Request) async throws -> Response {
@@ -127,10 +195,10 @@ struct TranscriptionController: RouteCollection {
                                     // Only error after 5 seconds of retries (10 * 500ms)
                                     logger.warning("Job \(jobId) not found after 10 attempts, sending error")
                                     let errorEvent = "event: error\ndata: {\"error\":\"Job not found\"}\n\n"
-                                    try? await writer.write(.buffer(.init(string: errorEvent)))
+                                    try writer.write(.buffer(.init(string: errorEvent))).wait()
                                     break
                                 }
-                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                try await Task.sleep(nanoseconds: 500_000_000)
                                 continue
                             }
                             
@@ -141,18 +209,25 @@ struct TranscriptionController: RouteCollection {
                             if job.updatedAt > lastUpdated {
                                 lastUpdated = job.updatedAt
                                 
-                                let eventData: [String: Any] = [
+                                var eventData: [String: Any] = [
                                     "status": job.status,
                                     "progress": job.progress,
                                     "transcript": job.transcript,
                                     "error_message": job.errorMessage
                                 ]
+
+                                if job.status == "completed" {
+                                    if let segmentsData = job.transcriptSegments.data(using: .utf8),
+                                       let segments = try? JSONSerialization.jsonObject(with: segmentsData, options: []) {
+                                        eventData["transcript_segments"] = segments
+                                    }
+                                }
                                 
                                 if let jsonData = try? JSONSerialization.data(withJSONObject: eventData),
                                    let jsonString = String(data: jsonData, encoding: .utf8) {
+                                    // Include event ID for reconnection
+                                    let message = "id: \(job.updatedAt)\nevent: update\ndata: \(jsonString)\n\n"
                                     do {
-                                        // Include event ID for reconnection
-                                        let message = "id: \(job.updatedAt)\nevent: update\ndata: \(jsonString)\n\n"
                                         try await writer.write(.buffer(.init(string: message)))
                                     } catch {
                                         // Stream closed by client, exit cleanly
@@ -163,7 +238,7 @@ struct TranscriptionController: RouteCollection {
                                 
                                 if job.status == "completed" || job.status == "failed" {
                                     // Give a moment for client to receive the last message
-                                    try? await Task.sleep(nanoseconds: 100_000_000)
+                                    try await Task.sleep(nanoseconds: 100_000_000)
                                     break
                                 }
                             } else {
@@ -180,7 +255,7 @@ struct TranscriptionController: RouteCollection {
                                 }
                             }
                             
-                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            try await Task.sleep(nanoseconds: 500_000_000)
                         }
                     } catch {
                         // Ignore errors, just close
@@ -188,7 +263,7 @@ struct TranscriptionController: RouteCollection {
                     
                     // Always send .end unless client already closed
                     if !didClose {
-                        try? await writer.write(.end)
+                        _ = try? writer.write(.end).wait()
                     }
                 }
             })
@@ -226,7 +301,7 @@ struct TranscriptionController: RouteCollection {
         }
         
         let response = ["jobs": jobsData]
-        return try await Response(
+        return try Response(
             status: .ok,
             headers: ["Content-Type": "application/json"],
             body: .init(data: JSONSerialization.data(withJSONObject: response))

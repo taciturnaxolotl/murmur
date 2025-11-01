@@ -51,32 +51,19 @@ actor TranscriptionService {
             var lastProgress: Double = 0
             var lastLogTime = Date()
             var callbackCount = 0
-            var estimatedTotal = 0
             
             let results = try await whisper.transcribe(
                 audioPath: tempFilePath.path,
                 callback: { progress in
                     callbackCount += 1
                     
-                    // Estimate total callbacks after we have some data
-                    if estimatedTotal == 0 && callbackCount > 100 {
-                        // For an hour recording, expect ~4000-6000 callbacks
-                        // Estimate based on current rate
-                        estimatedTotal = callbackCount * 50 // rough estimate
-                    }
-                    
                     // Only log every 2 seconds to avoid spam
                     let now = Date()
                     if now.timeIntervalSince(lastLogTime) >= 2.0 {
                         lastLogTime = now
                         
-                        let currentProgress: Double
-                        if estimatedTotal > 0 {
-                            currentProgress = min((Double(callbackCount) / Double(estimatedTotal)) * 100.0, 95.0)
-                        } else {
-                            // Early on, show minimal progress
-                            currentProgress = min(Double(callbackCount) / 100.0, 10.0)
-                        }
+                        // Use minimal progress indication
+                        let currentProgress = min(Double(callbackCount) / 50.0, 90.0)
                         
                         if currentProgress > lastProgress {
                             lastProgress = currentProgress
@@ -102,13 +89,30 @@ actor TranscriptionService {
             
             let fullTranscript = results.map { $0.text }.joined(separator: " ")
             
-            logger.info("Transcription completed for job \(jobId) - \(fullTranscript.count) characters, total callbacks: \(callbackCount)")
+            // Build segments with timestamps
+            var segmentsData: [[String: Any]] = []
+            for result in results {
+                for segment in result.segments {
+                    segmentsData.append([
+                        "id": segment.id,
+                        "start": segment.start,
+                        "end": segment.end,
+                        "text": segment.text
+                    ])
+                }
+            }
+            
+            let segmentsJson = (try? JSONSerialization.data(withJSONObject: segmentsData))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+            
+            logger.info("Transcription completed for job \(jobId) - \(fullTranscript.count) characters, \(segmentsData.count) segments, total callbacks: \(callbackCount)")
             
             try await updateJob(
                 jobId,
                 status: "completed",
                 progress: 100.0,
                 transcript: fullTranscript,
+                transcriptSegments: segmentsJson,
                 db: db
             )
             
@@ -131,6 +135,7 @@ actor TranscriptionService {
         status: String? = nil,
         progress: Double? = nil,
         transcript: String? = nil,
+        transcriptSegments: String? = nil,
         errorMessage: String? = nil,
         db: any Database
     ) async throws {
@@ -146,6 +151,9 @@ actor TranscriptionService {
         }
         if let transcript = transcript {
             job.transcript = transcript
+        }
+        if let transcriptSegments = transcriptSegments {
+            job.transcriptSegments = transcriptSegments
         }
         if let errorMessage = errorMessage {
             job.errorMessage = errorMessage

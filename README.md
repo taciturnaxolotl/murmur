@@ -130,14 +130,40 @@ Get current status of a transcription job.
 curl http://localhost:8000/transcribe/a1b2c3d4-5678-90ab-cdef-1234567890ab
 ```
 
-**Response:**
+**Query Parameters:**
+- `format` (optional): `vtt` to receive the transcript in WebVTT format for timestamped results. Defaults to `json`.
+
+**Response (JSON):**
 ```json
 {
   "status": "transcribing",
   "progress": 45.5,
   "transcript": "Hello world this is a partial transcript...",
+  "transcript_segments": [
+      {
+          "start": 0.0,
+          "end": 2.5,
+          "text": "Hello world"
+      },
+      {
+          "start": 2.5,
+          "end": 5.0,
+          "text": "this is a partial transcript..."
+      }
+  ],
   "error_message": ""
 }
+```
+
+**Response (VTT):**
+```vtt
+WEBVTT
+
+00:00:00.000 --> 00:00:02.500
+Hello world
+
+00:00:02.500 --> 00:00:05.000
+this is a partial transcript...
 ```
 
 **Status values:** `pending` → `processing` → `transcribing` → `completed` or `failed`
