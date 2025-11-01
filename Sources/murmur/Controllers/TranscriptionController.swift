@@ -88,28 +88,56 @@ struct TranscriptionController: RouteCollection {
             throw Abort(.badRequest, reason: "Missing job ID")
         }
         
-        guard let _ = try await MurmurJob.find(jobId, on: req.db) else {
-            throw Abort(.notFound, reason: "Job not found")
-        }
+        // Get Last-Event-ID header for reconnection support
+        let lastEventId = req.headers.first(name: "Last-Event-ID").flatMap { Int($0) } ?? 0
         
         return Response(
             status: .ok,
             headers: [
                 "Content-Type": "text/event-stream",
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive"
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
             ],
             body: .init(stream: { writer in
                 Task {
-                    var lastUpdated = 0
+                    var lastUpdated = lastEventId
                     var didClose = false
+                    var jobNotFoundCount = 0
+                    var heartbeatCounter = 0
+                    
+                    let logger = Logger(label: "murmur.stream")
+                    logger.info("Stream started for job \(jobId), lastEventId: \(lastEventId)")
                     
                     do {
                         while true {
-                            guard let job = try? await MurmurJob.find(jobId, on: req.db) else {
-                                break
+                            let job: MurmurJob?
+                            do {
+                                job = try await MurmurJob.find(jobId, on: req.db)
+                            } catch {
+                                logger.warning("DB error looking up job \(jobId): \(error)")
+                                job = nil
                             }
                             
+                            guard let job = job else {
+                                // Allow retries - job might be starting up or DB temporarily busy
+                                jobNotFoundCount += 1
+                                logger.debug("Job \(jobId) not found, attempt \(jobNotFoundCount)/10")
+                                if jobNotFoundCount > 10 {
+                                    // Only error after 5 seconds of retries (10 * 500ms)
+                                    logger.warning("Job \(jobId) not found after 10 attempts, sending error")
+                                    let errorEvent = "event: error\ndata: {\"error\":\"Job not found\"}\n\n"
+                                    try? await writer.write(.buffer(.init(string: errorEvent)))
+                                    break
+                                }
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                continue
+                            }
+                            
+                            // Reset counter if job found
+                            jobNotFoundCount = 0
+                            
+                            // Send update if job changed
                             if job.updatedAt > lastUpdated {
                                 lastUpdated = job.updatedAt
                                 
@@ -123,7 +151,9 @@ struct TranscriptionController: RouteCollection {
                                 if let jsonData = try? JSONSerialization.data(withJSONObject: eventData),
                                    let jsonString = String(data: jsonData, encoding: .utf8) {
                                     do {
-                                        try await writer.write(.buffer(.init(string: "data: \(jsonString)\n\n")))
+                                        // Include event ID for reconnection
+                                        let message = "id: \(job.updatedAt)\nevent: update\ndata: \(jsonString)\n\n"
+                                        try await writer.write(.buffer(.init(string: message)))
                                     } catch {
                                         // Stream closed by client, exit cleanly
                                         didClose = true
@@ -135,6 +165,18 @@ struct TranscriptionController: RouteCollection {
                                     // Give a moment for client to receive the last message
                                     try? await Task.sleep(nanoseconds: 100_000_000)
                                     break
+                                }
+                            } else {
+                                // Send heartbeat every 5 iterations (~2.5 seconds) to keep connection alive
+                                heartbeatCounter += 1
+                                if heartbeatCounter >= 5 {
+                                    heartbeatCounter = 0
+                                    do {
+                                        try await writer.write(.buffer(.init(string: ": heartbeat\n\n")))
+                                    } catch {
+                                        didClose = true
+                                        break
+                                    }
                                 }
                             }
                             

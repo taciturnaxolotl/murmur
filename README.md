@@ -143,27 +143,51 @@ curl http://localhost:8000/transcribe/a1b2c3d4-5678-90ab-cdef-1234567890ab
 **Status values:** `pending` → `processing` → `transcribing` → `completed` or `failed`
 
 ### GET `/transcribe/:job_id/stream`
-Stream real-time progress updates via Server-Sent Events.
+Stream real-time progress updates via Server-Sent Events with automatic reconnection support.
 
 **Request:**
 ```bash
 curl -N http://localhost:8000/transcribe/a1b2c3d4-5678-90ab-cdef-1234567890ab/stream
 ```
 
-**Response:** SSE stream (polls every 500ms, only sends when updated)
+**Request with reconnection:**
+```bash
+curl -N -H "Last-Event-ID: 1704067180" http://localhost:8000/transcribe/a1b2c3d4-5678-90ab-cdef-1234567890ab/stream
 ```
+
+**Response:** SSE stream with event IDs (polls every 500ms, sends updates + heartbeats)
+```
+id: 1704067200
+event: update
 data: {"status":"pending","progress":0,"transcript":"","error_message":""}
 
+id: 1704067205
+event: update
 data: {"status":"processing","progress":0,"transcript":"","error_message":""}
 
+: heartbeat
+
+id: 1704067210
+event: update
 data: {"status":"transcribing","progress":12.3,"transcript":"Hello world","error_message":""}
 
-data: {"status":"transcribing","progress":45.7,"transcript":"Hello world this is a test","error_message":""}
+: heartbeat
 
+id: 1704067245
+event: update
 data: {"status":"completed","progress":100,"transcript":"Hello world this is a test transcription.","error_message":""}
 ```
 
-Stream automatically closes when job completes or fails.
+**Features:**
+- Event IDs allow resuming from last received update on reconnection
+- Heartbeat comments (`: heartbeat`) keep connection alive every ~2.5 seconds
+- Automatically retries job lookup for 5 seconds before sending error
+- Stream closes when job completes or fails
+
+**Resilient client example:**
+```bash
+./test_reconnect.sh <job_id>
+```
 
 ### GET `/jobs`
 List all transcription jobs (newest first).
@@ -316,6 +340,13 @@ First run downloads models from HuggingFace. Ensure internet connection and adeq
 - Use smaller models (tiny/base) for faster transcription
 - Ensure running on Apple Silicon for Neural Engine acceleration
 - Check Activity Monitor for thermal throttling
+
+### SSE stream disconnections
+If the SSE stream disconnects and you need to reconnect:
+- Use the `Last-Event-ID` header to resume from where you left off
+- The server keeps jobs in the database until explicitly deleted
+- Use `test_reconnect.sh` for automatic reconnection with exponential backoff
+- Server retries job lookups for 5 seconds before reporting "Job not found"
 
 ## License
 
