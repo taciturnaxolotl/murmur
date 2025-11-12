@@ -203,7 +203,7 @@ struct TranscriptionController: RouteCollection {
                                     // Only error after 5 seconds of retries (10 * 500ms)
                                     logger.warning("Job \(jobId) not found after 10 attempts, sending error")
                                     let errorEvent = "event: error\ndata: {\"error\":\"Job not found\"}\n\n"
-                                    try writer.write(.buffer(.init(string: errorEvent))).wait()
+                                    _ = try await writer.write(.buffer(.init(string: errorEvent))).get()
                                     break
                                 }
                                 try await Task.sleep(nanoseconds: 500_000_000)
@@ -236,7 +236,7 @@ struct TranscriptionController: RouteCollection {
                                     // Include event ID for reconnection
                                     let message = "id: \(job.updatedAt)\nevent: update\ndata: \(jsonString)\n\n"
                                     do {
-                                        try await writer.write(.buffer(.init(string: message)))
+                                        _ = try await writer.write(.buffer(.init(string: message))).get()
                                     } catch {
                                         // Stream closed by client, exit cleanly
                                         didClose = true
@@ -255,7 +255,7 @@ struct TranscriptionController: RouteCollection {
                                 if heartbeatCounter >= 5 {
                                     heartbeatCounter = 0
                                     do {
-                                        try await writer.write(.buffer(.init(string: ": heartbeat\n\n")))
+                                        _ = try await writer.write(.buffer(.init(string: ": heartbeat\n\n"))).get()
                                     } catch {
                                         didClose = true
                                         break
@@ -271,7 +271,7 @@ struct TranscriptionController: RouteCollection {
                     
                     // Always send .end unless client already closed
                     if !didClose {
-                        _ = try? writer.write(.end).wait()
+                        _ = try? await writer.write(.end).get()
                     }
                 }
             })
