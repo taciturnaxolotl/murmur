@@ -63,7 +63,7 @@ actor TranscriptionService {
                         lastLogTime = now
                         
                         // Use minimal progress indication
-                        let currentProgress = min(Double(callbackCount) / 50.0, 90.0)
+                        let currentProgress = Double(callbackCount) / 50.0
                         
                         if currentProgress > lastProgress {
                             lastProgress = currentProgress
