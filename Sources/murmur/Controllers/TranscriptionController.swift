@@ -110,7 +110,15 @@ struct TranscriptionController: RouteCollection {
                     let endFormatted = formatTimestamp(end)
                     
                     vtt += "\(startFormatted) --> \(endFormatted)\n"
-                    vtt += "\(text.trimmingCharacters(in: .whitespacesAndNewlines))\n\n"
+                    // Remove Whisper special tokens and markers from text to prevent parsing errors
+                    let sanitizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .replacingOccurrences(of: #"<\|\d+\.\d+\|>"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: #"<\|startoftranscript\|>"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: #"<\|endoftext\|>"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: #"<\|notimestamps\|>"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: "-->", with: "—>")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    vtt += "\(sanitizedText)\n\n"
                 }
             }
             return Response(status: .ok, headers: ["Content-Type": "text/vtt"], body: .init(string: vtt))
