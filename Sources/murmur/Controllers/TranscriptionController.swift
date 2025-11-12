@@ -178,7 +178,6 @@ struct TranscriptionController: RouteCollection {
             body: .init(stream: { writer in
                 Task {
                     var lastUpdated = lastEventId
-                    var didClose = false
                     var jobNotFoundCount = 0
                     var heartbeatCounter = 0
                     
@@ -239,7 +238,6 @@ struct TranscriptionController: RouteCollection {
                                         _ = try await writer.write(.buffer(.init(string: message))).get()
                                     } catch {
                                         // Stream closed by client, exit cleanly
-                                        didClose = true
                                         break
                                     }
                                 }
@@ -257,7 +255,6 @@ struct TranscriptionController: RouteCollection {
                                     do {
                                         _ = try await writer.write(.buffer(.init(string: ": heartbeat\n\n"))).get()
                                     } catch {
-                                        didClose = true
                                         break
                                     }
                                 }
@@ -269,10 +266,8 @@ struct TranscriptionController: RouteCollection {
                         // Ignore errors, just close
                     }
                     
-                    // Always send .end unless client already closed
-                    if !didClose {
-                        _ = try? await writer.write(.end).get()
-                    }
+                    // Always send .end to satisfy Vapor's requirement
+                    _ = try? await writer.write(.end).get()
                 }
             })
         )
