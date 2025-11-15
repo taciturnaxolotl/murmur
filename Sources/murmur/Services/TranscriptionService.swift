@@ -63,6 +63,7 @@ actor TranscriptionService {
             var lastProgress: Double = 0
             var lastLogTime = Date()
             var callbackCount = 0
+            var logCount = 0
             
             let results = try await whisper.transcribe(
                 audioPath: tempFilePath.path,
@@ -73,9 +74,10 @@ actor TranscriptionService {
                     let now = Date()
                     if now.timeIntervalSince(lastLogTime) >= 2.0 {
                         lastLogTime = now
+                        logCount += 1
                         
-                        // Calculate progress based on estimated segments
-                        let currentProgress = Double(callbackCount) * 100.0 / Double(estimatedSegments)
+                        // Increment progress with each log
+                        let currentProgress = Double(logCount) * 100.0 / Double(estimatedSegments)
                         
                         if currentProgress > lastProgress {
                             lastProgress = currentProgress
