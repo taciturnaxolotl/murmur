@@ -2,6 +2,7 @@ import Vapor
 import WhisperKit
 import Foundation
 import Fluent
+import AVFoundation
 
 actor TranscriptionService {
     private var whisperKit: WhisperKit?
@@ -38,6 +39,17 @@ actor TranscriptionService {
             
             logger.info("Audio file size: \(audioData.count) bytes")
             
+            // Get audio duration for progress calculation
+            var audioDurationSeconds = 0.0
+            let asset = AVAsset(url: tempFilePath)
+            let duration = try await asset.load(.duration)
+            audioDurationSeconds = duration.seconds
+            
+            // Calculate estimated segments (approx 1 segment per 5 seconds)
+            let estimatedSegments = max(1, Int(audioDurationSeconds / 5.0))
+            
+            logger.info("Audio duration: \(String(format: "%.1f", audioDurationSeconds)) seconds, estimated \(estimatedSegments) segments")
+            
             try await updateJob(jobId, status: "processing", progress: 0, db: db)
             
             guard let whisper = whisperKit else {
@@ -62,15 +74,15 @@ actor TranscriptionService {
                     if now.timeIntervalSince(lastLogTime) >= 2.0 {
                         lastLogTime = now
                         
-                        // Use minimal progress indication
-                        let currentProgress = Double(callbackCount) / 50.0
+                        // Calculate progress based on estimated segments
+                        let currentProgress = Double(callbackCount) * 100.0 / Double(estimatedSegments)
                         
                         if currentProgress > lastProgress {
                             lastProgress = currentProgress
                             
                             let transcript = progress.text.isEmpty ? "" : progress.text
                             
-                            print("[\(jobId)] Progress: \(String(format: "%.1f", currentProgress))% (\(callbackCount) callbacks) - \(transcript.prefix(50))...")
+                            print("[\(jobId)] Progress: \(String(format: "%.1f", currentProgress))% (callbacks: \(callbackCount)/~\(estimatedSegments)) - \(transcript.prefix(50))...")
                             
                             Task {
                                 try? await self.updateJob(
