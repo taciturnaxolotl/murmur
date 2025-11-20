@@ -21,7 +21,18 @@ actor TranscriptionService {
         
         let modelName = Environment.get("WHISPER_MODEL") ?? "small"
         
-        let config = WhisperKitConfig(model: modelName)
+        // Set explicit model folder path to avoid issues with working directory
+        let modelsURL = Environment.get("WHISPER_MODELS_PATH").map { URL(fileURLWithPath: $0) } ??
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cache/whisperkit")
+        
+        // Ensure the models directory exists
+        try? FileManager.default.createDirectory(at: modelsURL, withIntermediateDirectories: true)
+        
+        let config = WhisperKitConfig(
+            model: modelName,
+            modelFolder: modelsURL.path
+        )
         
         whisperKit = try await WhisperKit(config)
     }
