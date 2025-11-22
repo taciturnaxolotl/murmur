@@ -9,8 +9,10 @@ actor TranscriptionService {
     private let tempDirectory: URL
     private var activeJobs: Set<String> = []
     private let logger = Logger(label: "murmur.transcription")
+    private let whisperConfig: MurmurConfig.WhisperConfig
     
-    init() {
+    init(config: MurmurConfig.WhisperConfig) {
+        self.whisperConfig = config
         self.tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("murmur", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -19,10 +21,10 @@ actor TranscriptionService {
     func initialize() async throws {
         guard whisperKit == nil else { return }
         
-        let modelName = Environment.get("WHISPER_MODEL") ?? "small"
+        let modelName = whisperConfig.model
         
         // Set explicit model folder path to avoid issues with working directory
-        let modelsURL = Environment.get("WHISPER_MODELS_PATH").map { URL(fileURLWithPath: $0) } ??
+        let modelsURL = whisperConfig.modelsPath.map { URL(fileURLWithPath: $0) } ??
             FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/whisperkit")
         

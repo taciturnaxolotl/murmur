@@ -72,28 +72,26 @@ struct Murmur {
 }
 
 func configure(_ app: Application) async throws {
-    let databasePath = Environment.get("DATABASE_PATH") ?? "./murmur.db"
-    app.databases.use(.sqlite(.file(databasePath)), as: .sqlite)
+    let config = MurmurConfig.load()
+    
+    app.databases.use(.sqlite(.file(config.database.path)), as: .sqlite)
     
     app.migrations.add(CreateMurmurJob())
     try await app.autoMigrate()
     
     app.logger.info("Initializing WhisperKit...")
-    let transcriptionService = TranscriptionService()
+    let transcriptionService = TranscriptionService(config: config.whisper)
     try await transcriptionService.initialize()
     app.logger.info("WhisperKit initialized successfully")
     
-    let host = Environment.get("HOST") ?? "0.0.0.0"
-    let port = Int(Environment.get("PORT") ?? "8000") ?? 8000
-    
-    app.http.server.configuration.hostname = host
-    app.http.server.configuration.port = port
+    app.http.server.configuration.hostname = config.server.host
+    app.http.server.configuration.port = config.server.port
     
     app.routes.defaultMaxBodySize = "500mb"
     
     try routes(app, transcriptionService: transcriptionService)
     
-    app.logger.info("Murmur server starting on \(host):\(port)")
+    app.logger.info("Murmur server starting on \(config.server.host):\(config.server.port)")
 }
 
 func routes(_ app: Application, transcriptionService: TranscriptionService) throws {

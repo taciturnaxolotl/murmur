@@ -64,13 +64,46 @@ First run will download the Whisper model (~244MB for "small" model). The server
 
 ### Configuration
 
-Environment variables (see `.env.example`):
+You can configure Murmur using either:
+1. **Configuration file** (recommended) - `murmur.yaml` or `murmur.yml`
+2. **Environment variables** - Override file settings
 
+#### Configuration File
+
+Create a `murmur.yaml` file in the project root:
+
+```yaml
+server:
+  host: 0.0.0.0
+  port: 8000
+
+whisper:
+  model: small
+  # Optional: specify custom models directory
+  # modelsPath: /path/to/whisper/models
+
+database:
+  path: ./murmur.db
+```
+
+See `murmur.yaml.example` for a template.
+
+**Custom config location:** Set `MURMUR_CONFIG` environment variable to specify a config file path:
+```bash
+MURMUR_CONFIG=/path/to/config.yaml swift run
+```
+
+#### Environment Variables
+
+Environment variables override config file settings:
+
+- **`MURMUR_CONFIG`**: Path to config file (optional)
 - **`PORT`**: Server port (default: `8000`)
 - **`HOST`**: Server host (default: `0.0.0.0`)
 - **`WHISPER_MODEL`**: Model size (default: `small`)
   - Options: `tiny`, `base`, `small`, `medium`, `large-v3`
   - Tiny = fastest, Large = most accurate
+- **`WHISPER_MODELS_PATH`**: Custom models directory (optional)
 - **`DATABASE_PATH`**: SQLite database location (default: `./murmur.db`)
 
 Example:
@@ -297,13 +330,6 @@ Example `launchd` plist (macOS):
     </array>
     <key>WorkingDirectory</key>
     <string>/path/to/murmur</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PORT</key>
-        <string>8000</string>
-        <key>WHISPER_MODEL</key>
-        <string>small</string>
-    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -315,6 +341,8 @@ Example `launchd` plist (macOS):
 </dict>
 </plist>
 ```
+
+Configuration is read from `murmur.yaml` in the working directory. You can also set environment variables if needed.
 
 ## Performance
 

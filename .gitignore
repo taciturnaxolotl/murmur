@@ -11,3 +11,7 @@ DerivedData/
 *.db-wal
 .env
 murmur.db
+murmur.yaml
+murmur.yml
+.murmur.yaml
+.murmur.yml
