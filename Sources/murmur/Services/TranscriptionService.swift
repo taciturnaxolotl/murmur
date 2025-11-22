@@ -23,17 +23,10 @@ actor TranscriptionService {
         
         let modelName = whisperConfig.model
         
-        // Set explicit model folder path to avoid issues with working directory
-        let modelsURL = whisperConfig.modelsPath.map { URL(fileURLWithPath: $0) } ??
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".cache/whisperkit")
-        
-        // Ensure the models directory exists
-        try? FileManager.default.createDirectory(at: modelsURL, withIntermediateDirectories: true)
-        
+        // If modelsPath is set, use it; otherwise let WhisperKit auto-download
         let config = WhisperKitConfig(
             model: modelName,
-            modelFolder: modelsURL.path
+            modelFolder: whisperConfig.modelsPath
         )
         
         whisperKit = try await WhisperKit(config)
